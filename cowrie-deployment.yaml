@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cowrie-honeypot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cowrie-honeypot
+  template:
+    metadata:
+      labels:
+        app: cowrie-honeypot
+    spec:
+      containers:
+      - name: cowrie
+        image: cowrie/cowrie
+        ports:
+        - containerPort: 2222  # SSH Honeypot Port
+        - containerPort: 23    # Telnet Honeypot Port
+        volumeMounts:
+        - name: cowrie-data
+          mountPath: /data
+      volumes:
+      - name: cowrie-data
+        persistentVolumeClaim:
+          claimName: cowrie-pvc  # Persistent volume claim for data storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cowrie-honeypot-service
+spec:
+  selector:
+    app: cowrie-honeypot
+  ports:
+  - name: ssh-port
+    protocol: TCP
+    port: 2222
+    targetPort: 2222
+    nodePort: 32222  # Expose the SSH honeypot port on the host
+  - name: telnet-port
+    protocol: TCP
+    port: 23
+    targetPort: 23
+    nodePort: 30023  # Expose the Telnet honeypot port on the host
+  type: NodePort
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cowrie-pv  # This should be a unique name for the PV
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: "/mnt/data/cowrie"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cowrie-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

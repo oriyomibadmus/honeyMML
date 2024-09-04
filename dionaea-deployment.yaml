@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dionaea-honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dionaea-honeypot
+  template:
+    metadata:
+      labels:
+        app: dionaea-honeypot
+    spec:
+      containers:
+      - name: dionaea
+        image: dinotools/dionaea
+        ports:
+        - containerPort: 21    # FTP
+        - containerPort: 80    # HTTP
+        - containerPort: 443   # HTTPS
+        - containerPort: 445   # SMB
+        - containerPort: 1433  # MSSQL
+        - containerPort: 3306  # MySQL
+        - containerPort: 5060  # SIP
+        - containerPort: 69    # TFTP
+        volumeMounts:
+        - name: dionaea-data
+          mountPath: /var/dionaea
+      volumes:
+      - name: dionaea-data
+        persistentVolumeClaim:
+          claimName: dionaea-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dionaea-honeypot-service
+spec:
+  selector:
+    app: dionaea-honeypot
+  ports:
+  - name: ftp-port
+    protocol: TCP
+    port: 21
+    targetPort: 21
+    nodePort: 30021  # Expose the FTP port
+  - name: http-port
+    protocol: TCP
+    port: 80
+    targetPort: 80
+    nodePort: 30080  # Expose the HTTP port
+  - name: https-port
+    protocol: TCP
+    port: 443
+    targetPort: 443
+    nodePort: 30443  # Expose the HTTPS port
+  - name: smb-port
+    protocol: TCP
+    port: 445
+    targetPort: 445
+    nodePort: 30445  # Expose the SMB port
+  - name: mssql-port
+    protocol: TCP
+    port: 1433
+    targetPort: 1433
+    nodePort: 31433  # Expose the MSSQL port
+  - name: mysql-port
+    protocol: TCP
+    port: 3306
+    targetPort: 3306
+    nodePort: 30306  # Expose the MySQL port
+  - name: sip-port
+    protocol: UDP
+    port: 5060
+    targetPort: 5060
+    nodePort: 30660  # Expose the SIP port
+  - name: tftp-port
+    protocol: UDP
+    port: 69
+    targetPort: 69
+    nodePort: 30069  # Expose the TFTP port
+  type: NodePort
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dionaea-pv  # This should be a unique name for the PV
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: "/mnt/data/dionaea"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dionaea-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+
+
+
+
+import json
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+
+# Load the log file
+log_file_path = 'dataset/cowrie-2022-11-25.json'
+
+# Read JSON log file into a Pandas DataFrame
+with open(log_file_path, 'r') as f:
+    log_data = [json.loads(line) for line in f]
+
+
+df = pd.DataFrame(log_data)
+
+# Example of trusted IPs
+trusted_ips = ["192.168.1.100", "10.0.0.1"]  # Add more trusted IPs as needed
+
+# Define a function to label the data
+def label_log_entry(log_entry):
+    eventid = log_entry.get("eventid")
+    src_ip = log_entry.get("src_ip")
+    timestamp = log_entry.get("timestamp")
+    command = log_entry.get("input")
+    dest_file = log_entry.get("destfile")
+
+    # Check for failed login attempts
+    if eventid == "cowrie.login.failed":
+        failed_attempts = df[(df['eventid'] == "cowrie.login.failed") & (df['src_ip'] == src_ip)]
+        if len(failed_attempts) > 3:  # Example condition
+            return 1  # Malicious due to repeated failed login attempts
+        return 0  # Single failed login might be benign
+
+    # Check for file download/upload attempts
+    elif eventid in ["cowrie.session.file_download", "cowrie.session.file_upload"]:
+        return 1  # Mark as malicious due to file download/upload attempt
+
+    # Check for command input
+    elif eventid == "cowrie.command.input":
+        failed_logins = df[(df['eventid'] == "cowrie.login.failed") & (df['src_ip'] == src_ip)]
+        if not failed_logins.empty:
+            return 1  # Malicious due to suspicious command input after failed login
+        elif src_ip not in trusted_ips:  # Assume trusted_ips is defined
+            return 1  # Malicious command input from an untrusted IP
+        return 0  # Benign command input
+
+    # Check for successful login
+    elif eventid == "cowrie.login.success":
+        if src_ip not in trusted_ips:  # Assume trusted_ips is defined
+            return 1  # Malicious due to successful login from untrusted IP
+        return 0  # Benign successful login from a trusted IP
+
+    # Additional conditions can be added here
+
+    return 0  # Default to benign for other cases
+
+
+# Apply the labeling function
+df['label'] = df.apply(label_log_entry, axis=1)
+
+
+
+# Now you have a labeled dataset
+print(df[['eventid', 'src_ip', 'label']].head())
+
+
+
+output_file_path = 'dataset/labeled_cowrie_logs.csv'  # Specify your desired output file path
+
+# Export to CSV
+df.to_csv(output_file_path, index=False)
+
+print(f"Data with labels exported to {output_file_path}")
+
+
+X = df.drop(columns=['label'])  # Features (all columns except the label)
+y = df['label']  # Target (label column)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
